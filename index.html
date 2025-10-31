@@ -1,405 +1,133 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MoodFlow: Real-Time Mood Detection</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+import cv2
+from deepface import DeepFace
+import numpy as np
 
-    <style>
-        /* Custom styles for a clean, eye-catching look */
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
-        body {
-            font-family: 'Inter', sans-serif;
-        }
-        #video, #canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-        }
-        .video-container {
-            position: relative;
-            width: 100%;
-            max-width: 400px;
-            height: 300px;
-            overflow: hidden;
-            border-radius: 1.5rem; /* Large rounded corners */
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1); /* Soft shadow */
-        }
-        /* Spinner CSS for API loading */
-        .spinner {
-            border: 4px solid rgba(0, 0, 0, 0.1);
-            width: 24px;
-            height: 24px;
-            border-radius: 50%;
-            border-left-color: #4F46E5;
-            animation: spin 1s ease infinite;
-            display: inline-block;
-            vertical-align: middle;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    </style>
-</head>
-<body class="min-h-screen flex flex-col bg-[#f7f9fc]">
+# --- Configuration ---
+# We will map the 'surprise' emotion from deepface to 'confused' as requested.
+MOOD_MAP = {
+    'angry': 'Anger',
+    'disgust': 'Disgust',
+    'fear': 'Fear',
+    'happy': 'Happy',
+    'sad': 'Sad',
+    'surprise': 'Confused', # Mapping surprise to confused
+    'neutral': 'Neutral'
+}
+# Colors for the bounding box and text
+BOX_COLOR = (0, 255, 255) # Yellow
+TEXT_COLOR = (255, 255, 255) # White
+FONT = cv2.FONT_HERSHEY_SIMPLEX
 
-    <header class="p-4 bg-white shadow-md sticky top-0 z-10">
-        <div class="max-w-7xl mx-auto flex justify-between items-center">
-            <h1 class="text-2xl font-extrabold text-indigo-600 tracking-wider">
-                <span class="text-green-500">M</span>ood<span class="text-green-500">F</span>low
-            </h1>
-            <nav>
-                <a href="#" class="text-gray-600 hover:text-indigo-600 transition duration-150 text-sm md:text-base">AI Powered</a>
-            </nav>
-        </div>
-    </header>
+# --- Load Models ---
+# Load OpenCV's pre-trained face detector (Haar Cascade)
+# This is faster for just finding the face boundaries.
+try:
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+except Exception as e:
+    print(f"Error loading Haar Cascade model: {e}")
+    print("Please ensure OpenCV is installed correctly.")
+    exit()
 
-    <main class="flex-grow flex items-center justify-center p-4">
-        <div class="bg-white p-8 md:p-12 rounded-3xl shadow-2xl max-w-4xl w-full flex flex-col md:flex-row gap-10">
+# Pre-load the DeepFace model to avoid delay on first frame
+# This will use the default model (VGG-Face) and backend.
+print("Loading emotion detection model (this may take a moment)...")
+try:
+    DeepFace.analyze(np.zeros((100, 100, 3)), actions=['emotion'], enforce_detection=False)
+    print("Model loaded successfully.")
+except Exception as e:
+    print(f"Error pre-loading DeepFace model: {e}")
+    # We can still try to proceed, it might load on the fly
+    pass
 
-            <div class="flex-shrink-0">
-                <h2 class="text-2xl font-bold text-gray-800 mb-4 flex items-center">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-2 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.218A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.218A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                    Your Camera
-                </h2>
-                <div class="video-container">
-                    <video id="video" width="400" height="300" autoplay muted></video>
-                    <canvas id="canvas" width="400" height="300"></canvas>
-                </div>
-                <p id="loading-status" class="mt-4 text-sm text-yellow-600 font-semibold">Loading AI Models... Please Wait.</p>
-            </div>
+# --- Initialize Webcam ---
+cap = cv2.VideoCapture(0) # 0 is the default webcam
 
-            <div class="flex-grow">
-                <h2 class="text-2xl font-bold text-gray-800 mb-6 flex items-center">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-2 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 4.016M12 2.944v14.128" />
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2.944a11.955 11.955 0 014.577 15.011s.5-1.5.5-2.5m-5.077 2.5a11.955 11.955 0 01-4.577-15.011S7 5 7 6a2.5 2.5 0 015 0z" />
-                    </svg>
-                    Mood Analysis
-                </h2>
+if not cap.isOpened():
+    print("Error: Could not open webcam.")
+    exit()
 
-                <div class="mb-6 p-4 bg-indigo-50 rounded-xl border border-indigo-200">
-                    <p class="text-lg font-semibold text-indigo-700">Current Mood:</p>
-                    <p id="mood-output" class="text-4xl font-extrabold text-indigo-900 mt-1">Awaiting Face...</p>
-                </div>
+# --- Real-time Detection Loop ---
+# We'll analyze emotions every N frames to improve performance,
+# as emotion detection is computationally expensive.
+FRAME_ANALYSIS_INTERVAL = 10 # Analyze every 10 frames
+frame_counter = 0
+# dominant_emotion = "Scanning..." # <-- REMOVED: This global variable caused the bug.
 
-                <div class="p-6 bg-green-50 rounded-xl border border-green-200">
-                    <p class="text-xl font-bold text-green-700 mb-3 flex items-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor">
-                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l3 3a1 1 0 001.414-1.414L11 9.586V6z" clip-rule="evenodd" />
-                        </svg>
-                        AI-Powered Suggestion
-                        <span id="suggestion-loading" class="spinner ml-3 hidden"></span>
-                    </p>
-                    <p id="suggestion-content" class="text-gray-600 mb-4">
-                        Position your face clearly in front of the camera to begin the AI analysis.
-                    </p>
+while True:
+    # Read a frame from the webcam
+    ret, frame = cap.read()
+    if not ret:
+        print("Error: Failed to capture frame.")
+        break
 
-                    <p class="text-sm font-bold text-yellow-700 mt-4">A Deeper Question:</p>
-                    <p id="question-content" class="text-gray-800 italic">
-                        What are you hoping to discover today?
-                    </p>
-
-                    <div id="sources-output" class="mt-4 text-xs text-gray-500"></div>
-                </div>
-
-                <p id="error-message" class="text-red-500 mt-4 text-center hidden">Camera access denied or failed to load. Please ensure permissions are granted.</p>
-            </div>
-        </div>
-    </main>
+    # Flip the frame horizontally (mirror effect)
+    frame = cv2.flip(frame, 1)
     
-    <footer class="mt-auto p-4 text-center text-sm text-gray-500 border-t border-gray-200 bg-white">
-        <p>&copy; 2024 MoodFlow. Real-time emotion detection powered by Face-API.js and Gemini AI.</p>
-    </footer>
+    # Convert the frame to grayscale for the Haar cascade detector
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    <script type="module">
-        // --- Firebase Boilerplate (Required by Canvas environment for auth/storage) ---
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    # Detect faces in the grayscale frame
+    faces = face_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
 
-        // Set Firebase Log Level to Debug
-        setLogLevel('Debug');
-
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const __initial_auth_token = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : undefined;
-
-        let app, db, auth;
-
-        // Initialize and authenticate
-        try {
-            if (Object.keys(firebaseConfig).length > 0) {
-                app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-
-                if (__initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-                console.log("Firebase initialized and user signed in.");
-            }
-        } catch (error) {
-            console.error("Firebase initialization failed:", error);
-        }
-        // --- End Firebase Boilerplate ---
-
-        const video = document.getElementById('video');
-        const canvas = document.getElementById('canvas');
-        const moodOutput = document.getElementById('mood-output');
-        const suggestionContent = document.getElementById('suggestion-content');
-        const questionContent = document.getElementById('question-content');
-        const suggestionLoading = document.getElementById('suggestion-loading');
-        const loadingStatus = document.getElementById('loading-status');
-        const errorMessage = document.getElementById('error-message');
-        const sourcesOutput = document.getElementById('sources-output');
-
-        let modelsLoaded = false;
-        let isDetecting = false;
-        let lastSuggestedMood = null;
-        let lastApiCallTime = 0;
-        const API_CALL_DELAY = 5000; // Throttle API calls to max once every 5 seconds
-
-        // Mood definitions with prompt structure
-        const MOODS = {
-            'happy': { emoji: '😄 Happy', color: 'text-green-600', prompt: "Generate a fun, specific activity idea or a positive thought to amplify and maintain this positive mood, using up-to-date web suggestions." },
-            'neutral': { emoji: '😐 Neutral', color: 'text-blue-600', prompt: "Generate a gentle, motivating suggestion to introduce slight positive change, like a simple productivity tip or an interesting short read." },
-            'sad': { emoji: '😔 Sad', color: 'text-indigo-600', prompt: "Generate a compassionate, self-care activity idea to gently process or shift this mood, such as a guided reflection or a comfort activity." },
-            'angry': { emoji: '😡 Anger', color: 'text-red-600', prompt: "Generate a productive, healthy way to channel or release this energy, such as a physical activity, a focused task, or a writing exercise." },
-            'fearful': { emoji: '😨 Anxious', color: 'text-yellow-600', prompt: "Generate a calming, grounding technique or a simple step-by-step action to regain a sense of control and clarity, using search for relevant tips." },
-            'disgusted': { emoji: '🧐 Concentrated', color: 'text-purple-600', prompt: "Generate a short break idea or a task management technique to refresh focus and maintain efficiency." }
-        };
-
-        // --- GEMINI API INTEGRATION ---
+    # Process each detected face
+    for (x, y, w, h) in faces:
+        # Draw a bounding box around the face
+        cv2.rectangle(frame, (x, y), (x + w, y + h), BOX_COLOR, 2)
         
-        /**
-         * Generic fetch wrapper with exponential backoff for API calls.
-         */
-        async function fetchWithBackoff(url, options, retries = 3) {
-            for (let i = 0; i < retries; i++) {
-                try {
-                    const response = await fetch(url, options);
-                    if (!response.ok) {
-                        // Throw error for non-2xx responses
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                    return response;
-                } catch (error) {
-                    if (i === retries - 1) throw error; // Re-throw on last attempt
-                    const delay = Math.pow(2, i) * 1000 + Math.random() * 1000;
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                }
-            }
-        }
+        # Only run emotion analysis every N frames
+        if frame_counter % FRAME_ANALYSIS_INTERVAL == 0:
+            try:
+                # Extract the face Region of Interest (ROI)
+                # DeepFace prefers BGR format, which 'frame' already is
+                face_roi = frame[y:y + h, x:x + w]
 
-        /**
-         * Calls the Gemini API to generate a suggestion and question based on mood.
-         */
-        async function generateSuggestion(mood) {
-            const moodData = MOODS[mood];
-            const systemPrompt = `You are a friendly, encouraging life coach and mental wellness assistant. Your task is to provide a single, actionable suggestion and a single reflective question based on the user's current mood. Structure your entire response into two distinct, labeled parts: "Suggestion:" followed by the activity, and "Question:" followed by the reflective query.`;
-            const userQuery = `The user's current mood is "${moodData.emoji}". ${moodData.prompt} After the suggestion, generate one concise, reflective question aimed at self-discovery or grounding.`;
-
-            // CRITICAL FIX: You MUST replace this empty string with your actual Gemini API key.
-            const apiKey = ""; 
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-            
-            const payload = {
-                contents: [{ parts: [{ text: userQuery }] }],
-                tools: [{ "google_search": {} }],
-                systemInstruction: { parts: [{ text: systemPrompt }] },
-            };
-
-            suggestionLoading.classList.remove('hidden');
-            sourcesOutput.innerHTML = '';
-            
-            try {
-                const response = await fetchWithBackoff(apiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
+                # Analyze the emotion of the face ROI
+                # 'enforce_detection=False' tells deepface we've already found the face
+                result = DeepFace.analyze(face_roi, actions=['emotion'], enforce_detection=False)
                 
-                const result = await response.json();
-                const candidate = result.candidates?.[0];
+                # --- FIX 2: Check if result is valid before accessing ---
+                if result and len(result) > 0:
+                    # Get the dominant emotion for THIS face
+                    raw_emotion = result[0]['dominant_emotion']
+                    dominant_emotion = MOOD_MAP.get(raw_emotion, raw_emotion) # Use our map
+                else:
+                    dominant_emotion = "Unknown" # Handle case where analysis fails
 
-                if (candidate && candidate.content?.parts?.[0]?.text) {
-                    const text = candidate.content.parts[0].text;
-                    let sources = [];
-                    
-                    // Extract Grounding Sources (Citations)
-                    const groundingMetadata = candidate.groundingMetadata;
-                    if (groundingMetadata && groundingMetadata.groundingAttributions) {
-                        sources = groundingMetadata.groundingAttributions
-                            .map(attr => ({
-                                uri: attr.web?.uri,
-                                title: attr.web?.title,
-                            }))
-                            .filter(source => source.uri && source.title);
-                    }
+                # --- FIX 1: Draw logic moved INSIDE the analysis block ---
+                # This ensures the correct emotion is drawn on the correct face.
+                
+                # Put the text background
+                (text_w, text_h), _ = cv2.getTextSize(dominant_emotion, FONT, 0.9, 2)
+                cv2.rectangle(frame, (x, y - text_h - 15), (x + text_w, y - 10), BOX_COLOR, -1)
+                # Put the text
+                cv2.putText(frame, 
+                            dominant_emotion, 
+                            (x, y - 15), 
+                            FONT, 
+                            0.9, 
+                            (0,0,0), # Black text for contrast on yellow bg
+                            2)
 
-                    // Parse the generated text into Suggestion and Question
-                    const parts = text.split(/Suggestion:|Question:/i).map(s => s.trim()).filter(s => s.length > 0);
-                    
-                    if (parts.length >= 2) {
-                        // The prompt asks for "Suggestion:" then "Question:"
-                        suggestionContent.textContent = parts[0].trim().replace(/\*|#|\n/g, ''); // Clean markdown
-                        questionContent.textContent = parts[1].trim().replace(/\*|#|\n/g, ''); // Clean markdown
-                    } else if (parts.length === 1) {
-                         // Fallback for unexpected format
-                        suggestionContent.textContent = parts[0].trim().replace(/\*|#|\n/g, '');
-                        questionContent.textContent = 'Reflect on this: How does this feeling serve you today?';
-                    } else {
-                        throw new Error("AI output was empty or unparseable.");
-                    }
+            except Exception as e:
+                # This can happen if the face is too small or at a weird angle
+                # print(f"Analysis error: {e}")
+                pass # Don't draw anything if an error occurs
+        
+        # --- Draw the emotion text --- (REMOVED from here)
+        # The logic was moved up to fix the multi-face bug.
 
-                    // Display Sources
-                    if (sources.length > 0) {
-                        const uniqueSources = Array.from(new Set(sources.map(s => s.uri)))
-                            .map(uri => sources.find(s => s.uri === uri));
-                        
-                        sourcesOutput.innerHTML = 'Sources: ' + uniqueSources.map((s, i) => 
-                            `<a href="${s.uri}" target="_blank" class="text-indigo-500 hover:underline">${s.title.substring(0, 30)}...</a>`
-                        ).join(', ');
-                    }
+    # Increment frame counter
+    frame_counter += 1
 
-                } else {
-                    throw new Error("AI did not return content.");
-                }
+    # Display the resulting frame
+    cv2.imshow('Mood Detector (Press \'q\' to quit)', frame)
 
-            } catch (e) {
-                console.error("AI suggestion failed:", e);
-                suggestionContent.textContent = `Sorry, the AI helper is unavailable right now. Please check the console for details and ensure your Gemini API Key is correctly inserted.`;
-                questionContent.textContent = `Try a simple technique: take a 30-second break.`;
-            } finally {
-                suggestionLoading.classList.add('hidden');
-            }
-        }
+    # Check for the 'q' key to exit the loop
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
 
-        // --- FACE-API LOGIC ---
+# --- Cleanup ---
+cap.release()
+cv2.destroyAllWindows()
+print("Application closed.")
 
-        // Custom function to find the most likely mood
-        function getBestMood(expressions) {
-            if (!expressions) return null;
-
-            const moodKeys = ['happy', 'neutral', 'sad', 'angry', 'fearful', 'disgusted', 'surprised'];
-            let bestMood = 'neutral';
-            let maxConfidence = 0.5; // Start with a decent baseline
-            
-            // Look for the most confident expression
-            for (const key of moodKeys) {
-                // Ensure the expression key exists and the value is a number
-                if (expressions.hasOwnProperty(key) && expressions[key] > maxConfidence) {
-                    maxConfidence = expressions[key];
-                    bestMood = key;
-                }
-            }
-            
-            // If the max confidence is too low, default to 'neutral'
-            if (maxConfidence < 0.25) {
-                return 'neutral';
-            }
-
-            return bestMood;
-        }
-
-        // 1. Load the Models
-        async function loadModels() {
-            const MODEL_URL = 'https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/model';
-            try {
-                await faceapi.nets.tinyFaceDetector.load(MODEL_URL);
-                await faceapi.nets.faceLandmark68Net.load(MODEL_URL);
-                await faceapi.nets.faceExpressionNet.load(MODEL_URL);
-                modelsLoaded = true;
-                loadingStatus.textContent = 'AI Models loaded! Starting camera stream...';
-                startVideo();
-            } catch (e) {
-                loadingStatus.textContent = 'Error loading face models. Check your network.';
-                console.error('Model load error:', e);
-            }
-        }
-
-        // 2. Start Video Stream
-        function startVideo() {
-            navigator.mediaDevices.getUserMedia({ video: { width: 400, height: 300 } })
-                .then(stream => {
-                    video.srcObject = stream;
-                    loadingStatus.style.display = 'none';
-                })
-                .catch(err => {
-                    console.error("Camera access error:", err);
-                    loadingStatus.textContent = 'Access Denied.';
-                    errorMessage.textContent = 'Camera access denied or failed to load. Please ensure permissions are granted in your browser settings.';
-                    errorMessage.classList.remove('hidden');
-                });
-        }
-
-        // 3. Start Detection Loop
-        video.addEventListener('play', () => {
-            if (isDetecting) return;
-
-            const displaySize = { width: video.width, height: video.height };
-            faceapi.matchDimensions(canvas, displaySize);
-
-            // Set interval for detection
-            isDetecting = true;
-            setInterval(async () => {
-                const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 256 }))
-                    .withFaceLandmarks()
-                    .withFaceExpressions();
-
-                // Clear the canvas from previous drawing
-                const ctx = canvas.getContext('2d');
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-                if (detections.length > 0) {
-                    const resizedDetections = faceapi.resizeResults(detections, displaySize);
-                    
-                    // FIX: Draw the bounding box
-                    faceapi.draw.drawDetections(canvas, resizedDetections, { boxColor: '#4F46E5', lineWidth: 2 });
-                    
-                    // FIX: Draw the mood expression label
-                    faceapi.draw.drawFaceExpressions(canvas, resizedDetections, 0.05);
-
-                    const expressions = resizedDetections[0].expressions;
-                    const currentMoodKey = getBestMood(expressions);
-                    const moodData = MOODS[currentMoodKey];
-
-                    // Update UI
-                    moodOutput.innerHTML = `${moodData.emoji}`;
-                    moodOutput.className = `text-4xl font-extrabold mt-1 ${moodData.color}`;
-                    
-                    // Call AI Suggestion only if mood changes or enough time has passed
-                    const currentTime = Date.now();
-                    if (currentMoodKey !== lastSuggestedMood || (currentTime - lastApiCallTime > API_CALL_DELAY && suggestionLoading.classList.contains('hidden'))) {
-                        lastSuggestedMood = currentMoodKey;
-                        lastApiCallTime = currentTime;
-                        generateSuggestion(currentMoodKey);
-                    }
-                    
-                } else {
-                    // No face detected
-                    moodOutput.textContent = 'Awaiting Face...';
-                    moodOutput.className = 'text-4xl font-extrabold text-indigo-900 mt-1';
-                    suggestionContent.textContent = 'Please move closer or ensure your face is well-lit and fully visible to start the AI analysis.';
-                    questionContent.textContent = 'What are you hoping to discover today?';
-                    sourcesOutput.innerHTML = '';
-                    lastSuggestedMood = null; // Reset suggestion state
-                }
-
-            }, 500); // Run face detection every 500ms
-        });
-
-        // Start the process
-        window.onload = loadModels;
-    </script>
-</body>
-</html>
